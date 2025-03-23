@@ -9,8 +9,8 @@ import asyncio
 
 # Argument parsing
 parser = argparse.ArgumentParser(description='dblp paper crawler.')
-parser.add_argument('--syear', type=int, default=2020, metavar="INT", 
-                    help='Year to start the crawler. Default: 2020')
+parser.add_argument('--syear', type=int, default=2015, metavar="INT", 
+                    help='Year to start the crawler. Default: 2010')
 parser.add_argument("--sthreshod", type=float, default=0.4, metavar="FLOAT", 
                     help="Threshold for paper score to add to paper list. Default: 0.8")
 parser.add_argument("--filename", default="conference.csv", metavar="*.csv", 
@@ -48,8 +48,12 @@ logger.addHandler(sh)
 
 # Keywords and conference information
 keywords = {
-    "linear": 0.2,
-    "attention": 0.2,
+    "malicious": 0.2,
+    "user": 0.2,
+    "attack": 0.2,
+    "detection": 0.2,
+    "recognitio": 0.2,
+
 }
 
 venue_set = {
@@ -109,6 +113,9 @@ async def searchConference(conf, keywords, filename):
     if not os.path.exists(filename):
         savePaper2csv([], filename)  # Ensure file exists with header
 
+    # 在文件开头添加
+    import time
+
     while not year_smaller_bool and page < max_pages:
         payload = {
             "q": search_word,
@@ -117,12 +124,23 @@ async def searchConference(conf, keywords, filename):
             "b": f"{page}",
         }
 
-        try:
-            r = requests.get(dblp_url, params=payload, timeout=10)
-            r.raise_for_status()
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Request failed: {e}")
-            break
+        # 添加重试机制
+        max_retries = 3
+        for retry in range(max_retries):
+            try:
+                # 增加请求超时时间到60秒
+                r = requests.get(dblp_url, params=payload, timeout=60)
+                r.raise_for_status()
+                break
+            except requests.exceptions.RequestException as e:
+                if retry == max_retries - 1:
+                    logger.error(f"Request failed after {max_retries} attempts: {e}")
+                    return paper_list
+                logger.warning(f"Request failed (attempt {retry + 1}/{max_retries}): {e}")
+                # 指数退避，等待时间随重试次数增加
+                wait_time = (retry + 1) * 5
+                logger.info(f"Waiting {wait_time} seconds before next attempt...")
+                time.sleep(wait_time)
 
         soup = BeautifulSoup(r.text, "html.parser")
         record_list = soup.find_all("li", class_=re.compile("year|inproceedings"))
@@ -171,7 +189,9 @@ async def searchConference(conf, keywords, filename):
                         writer = csv.writer(f)
                         writer.writerow([pp.title, pp.venue, pp.year, pp.pages, ", ".join(pp.authors), pp.bibtex_url])
 
-        page += 1  # Increment page number
+        # 在每页处理完成后添加延时，避免请求过于频繁
+        time.sleep(3)
+        page += 1
 
     logger.info(f"Found {len(paper_list)} papers for conference: {conf}")
     return paper_list
