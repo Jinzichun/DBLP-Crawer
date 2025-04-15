@@ -1,9 +1,10 @@
+import os
 import requests
 import csv
 import logging
 import argparse
 from bs4 import BeautifulSoup
-
+from tqdm import tqdm  # 引入进度条模块
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("BibTeX Fetcher")
@@ -32,33 +33,80 @@ def fetch_bibtex(bibtex_url):
         logger.error(f"Failed to fetch BibTeX data from {bibtex_url}: {e}")
         return None
 
-# Function to read and process CSV data, and write to new CSV file
+# Function to加载已有数据（以防二次检索）
+def load_existing_data(outputfile, key_field="title"):
+    existing_data = {}
+    if os.path.exists(outputfile):
+        with open(outputfile, mode="r", newline="", encoding="utf-8") as infile:
+            reader = csv.DictReader(infile)
+            for row in reader:
+                key = row.get(key_field, "").strip()
+                if key:
+                    existing_data[key] = row
+    return existing_data
+
+# Function to打印统计信息（这里仅打印错误日志，可根据需要调整）
+def print_statistics(inputfile, outputfile):
+    total_entries = 0
+    if os.path.exists(inputfile):
+        with open(inputfile, mode="r", newline="", encoding="utf-8") as infile:
+            reader = csv.DictReader(infile)
+            total_entries = sum(1 for _ in reader)
+    else:
+        logger.warning(f"Input file {inputfile} does not exist.")
+    
+    success_entries = 0
+    if os.path.exists(outputfile):
+        with open(outputfile, mode="r", newline="", encoding="utf-8") as outfile:
+            reader = csv.DictReader(outfile)
+            for row in reader:
+                bibtex_data = row.get("bibtex_data", "").strip()
+                if bibtex_data and bibtex_data not in ("Not Available", "No URL"):
+                    success_entries += 1
+    logger.error(f"Total target entries in {inputfile}: {total_entries}")
+    logger.error(f"Existing successful BibTeX entries in {outputfile}: {success_entries}")
+
+# 边处理边写入，每处理完一条记录就保存，防止数据丢失
 def process_csv(inputfile, outputfile):
-    # Open input file for reading
+    processed_data = load_existing_data(outputfile, key_field="title")
+    
+    # 读取输入 CSV 文件
     with open(inputfile, mode="r", newline="", encoding="utf-8") as infile:
         reader = csv.DictReader(infile)
-        rows = list(reader)
-
-    # Open output file for writing the processed data
+        input_rows = list(reader)
+        fieldnames = reader.fieldnames.copy() if reader.fieldnames else []
+        if "bibtex_data" not in fieldnames:
+            fieldnames.append("bibtex_data")
+    
+    # 以写模式打开输出文件，边处理边写入，同时覆盖原文件
     with open(outputfile, mode="w", newline="", encoding="utf-8") as outfile:
-        fieldnames = reader.fieldnames + ["bibtex_data"]  # Retain original columns and add 'bibtex_data' column
         writer = csv.DictWriter(outfile, fieldnames=fieldnames)
         writer.writeheader()
-
-        # Process each row in the CSV
-        for row in rows:
-            bibtex_url = row.get("bibtex_url")
+        
+        for row in tqdm(input_rows, desc="Processing papers", leave=False):
+            title = row.get("title", "").strip()
+            bibtex_url = row.get("bibtex_url", "").strip()
+            
+            # 优先使用已有数据（二次检索逻辑）
+            if title in processed_data:
+                existing_bibtex = processed_data[title].get("bibtex_data", "").strip()
+                if existing_bibtex and existing_bibtex not in ("Not Available", "No URL"):
+                    row["bibtex_data"] = existing_bibtex
+                    writer.writerow(row)
+                    outfile.flush()
+                    continue  # 跳过后续处理
+            
+            # 需要获取 BibTeX 数据且存在 URL
             if bibtex_url:
-                logger.info(f"Fetching BibTeX for URL: {bibtex_url}")
                 bibtex_data = fetch_bibtex(bibtex_url)
                 row["bibtex_data"] = bibtex_data if bibtex_data else "Not Available"
             else:
                 row["bibtex_data"] = "No URL"
+            
             writer.writerow(row)
-            logger.info(f"Processed row for paper: {row['title']}")
+            outfile.flush()  # 每写入一条记录后刷新确保数据写入磁盘
 
 # Main function to execute the processing
 if __name__ == "__main__":
-    logger.info(f"Processing CSV file: {args.inputfile}")
+    print_statistics(args.inputfile, args.outputfile)
     process_csv(args.inputfile, args.outputfile)
-    logger.info(f"BibTeX data fetching complete. Results saved to: {args.outputfile}")
